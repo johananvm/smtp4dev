@@ -32,10 +32,9 @@ namespace Rnwood.Smtp4dev.Controllers
 		private IMessagesRepository messagesRepository;
 
 		[HttpGet]
-
 		public IEnumerable<ApiModel.MessageSummary> GetSummaries(string sortColumn = "receivedDate", bool sortIsDescending = true)
 		{
-			return messagesRepository.GetMessages()
+            return messagesRepository.GetMessages()
 			.OrderBy(sortColumn + (sortIsDescending ? " DESC" : ""))
 			.Select(m => new ApiModel.MessageSummary(m));
 		}
@@ -52,6 +51,18 @@ namespace Rnwood.Smtp4dev.Controllers
 			var result = new ApiModel.Message(GetDbMessage(id));
 			return result;
 		}
+
+        [HttpGet]
+        [Route("last")]
+        public string GetLastMessage()
+        {
+            var result = messagesRepository.GetMessages()
+                .OrderBy("receivedDate DESC")
+                .Select(m => new ApiModel.MessageSummary(m))
+                .FirstOrDefault();
+            ApiModel.Message message = new ApiModel.Message(GetDbMessage(result.Id));
+            return CreateHtmlFromMessage(message, result.Id).DocumentNode.OuterHtml;
+        }
 
 		[HttpPost("{id}")]
 		public Task MarkMessageRead(Guid id)
@@ -89,40 +100,42 @@ namespace Rnwood.Smtp4dev.Controllers
 			return ApiModel.Message.GetPartSource(GetMessage(id), partid);
 		}
 
+        private HtmlDocument CreateHtmlFromMessage(ApiModel.Message message, Guid id)
+        {
+            string html = message.MimeMessage?.HtmlBody;
+
+            if (html == null)
+            {
+                html = "<pre>" + HtmlAgilityPack.HtmlDocument.HtmlEncode(message.MimeMessage?.TextBody) + "</pre>";
+            }
+
+
+            HtmlDocument doc = new HtmlDocument();
+            doc.LoadHtml(html);
+
+            HtmlNodeCollection imageElements = doc.DocumentNode.SelectNodes("//img[starts-with(@src, 'cid:')]");
+
+            if (imageElements != null)
+            {
+                foreach (HtmlNode imageElement in imageElements)
+                {
+                    string cid = imageElement.Attributes["src"].Value.Replace("cid:", "", StringComparison.OrdinalIgnoreCase);
+
+                    var part = message.Parts.Flatten(p => p.ChildParts).FirstOrDefault(p => p.ContentId == cid);
+
+                    imageElement.Attributes["src"].Value = $"api/Messages/{id.ToString()}/part/{part?.Id ?? "notfound"}/content";
+                }
+            }
+
+            return doc;
+        }
+
 		[HttpGet("{id}/html")]
 		[ResponseCache(Location = ResponseCacheLocation.Any, Duration = 31556926)]
 		public string GetMessageHtml(Guid id)
 		{
 			ApiModel.Message message = GetMessage(id);
-
-			string html = message.MimeMessage?.HtmlBody;
-
-			if (html == null)
-			{
-				html = "<pre>" + HtmlAgilityPack.HtmlDocument.HtmlEncode(message.MimeMessage?.TextBody) + "</pre>";
-			}
-
-	
-			HtmlDocument doc = new HtmlDocument();
-			doc.LoadHtml(html);
-
-			
-
-			HtmlNodeCollection imageElements = doc.DocumentNode.SelectNodes("//img[starts-with(@src, 'cid:')]");
-
-			if (imageElements != null)
-			{
-				foreach (HtmlNode imageElement in imageElements)
-				{
-					string cid = imageElement.Attributes["src"].Value.Replace("cid:", "", StringComparison.OrdinalIgnoreCase);
-
-					var part = message.Parts.Flatten(p => p.ChildParts).FirstOrDefault(p => p.ContentId == cid);
-
-					imageElement.Attributes["src"].Value = $"api/Messages/{id.ToString()}/part/{part?.Id ?? "notfound"}/content";
-				}
-			}
-
-			return doc.DocumentNode.OuterHtml;
+            return CreateHtmlFromMessage(message, id).DocumentNode.OuterHtml;
 		}
 
 		[HttpDelete("{id}")]
